@@ -35,6 +35,67 @@ Primary integration references:
 
 ## Run on your computer
 
+### Open Instagram's real login page (desktop browser mode)
+
+This opt-in flow opens a separate visible Chromium window at
+`https://www.instagram.com/accounts/login/`. You enter your password and any
+verification codes on Instagram itself. Once you reach Instagram's home page,
+the window closes and Story Circle tries to connect the browser session to its
+existing collector. It then finds your own stories and automatically compares
+the newest returned story's viewers with your followers and following.
+
+**This is an experimental browser-session connection, not official OAuth or
+DOM scraping.** A personal account can sign in on Instagram's website, but
+Instagram may reject that browser session for the unofficial collection API.
+Successful browser login does not guarantee data access. Restrictions and
+unavailable/incomplete lists stop collection; no bypass is attempted.
+
+Run this on your own desktop computer with a graphical display and Python 3.12:
+
+```bash
+python -m venv .venv
+# macOS / Linux:
+source .venv/bin/activate
+# Windows PowerShell instead: .venv\Scripts\Activate.ps1
+python -m pip install -r requirements-browser.txt
+python -m playwright install chromium
+python start_local.py
+```
+
+Open `http://127.0.0.1:8000`, confirm the own-account connection checkbox, and
+choose **Open Instagram to connect**. Finish login and any prompts in Instagram;
+reach its home page within five minutes. Return to Story Circle for results.
+Use **Cancel connection** or close the Instagram window to stop a pending login.
+Use **Disconnect** to stop collection and clear the local app session.
+
+The launcher binds only to `127.0.0.1` and disables proxy headers. Browser login
+also requires a loopback origin and a loopback client, plus the existing origin
+and CSRF checks. Do not put this desktop endpoint behind a public reverse proxy
+or tunnel. It is not a Railway/Docker login window for remote visitors.
+The normal hosted password flow remains unchanged when browser mode is off;
+password submission is disabled when browser mode is on.
+
+Only the explicitly opened temporary browser context is used: the app does not
+read your existing browser profile, fill login fields, save screenshots/traces,
+or export cookies to the frontend. The session cookie stays in the local process
+for the existing collector. The temporary browser context closes after login,
+cancellation, timeout, or an error. Browser implementation/OS temporary data is
+outside the app's in-memory retention guarantee. Disconnect clears the app's
+copy of the session; it does not revoke Instagram's server-side session. You can
+revoke that session through Instagram's own account settings.
+
+Automated browser-mode tests use simulated browser and provider objects. A real
+Instagram login and collection have **not** been verified.
+
+The browser lifecycle tests can also run without the app dependencies:
+`python -m unittest discover -s tests -p test_browser_login.py -v`.
+The complete API/session test suite still requires `requirements-test.txt`.
+
+References: [Playwright browser contexts](https://playwright.dev/python/docs/browser-contexts)
+and [instagrapi session-login limitations](https://subzeroid.github.io/instagrapi/usage-guide/interactions.html).
+
+### Existing password-based connection
+
 Requires Python 3.12. From this directory:
 
 ```bash
@@ -78,6 +139,7 @@ For a public launch, first validate the login/verification and viewer pagination
 |---|---|---|
 | `APP_ORIGIN` | Exact browser origin, including scheme and port when needed | `http://127.0.0.1:8000` |
 | `INSTAGRAM_ENABLED` | Whether to allow connection requests | `false` |
+| `INSTAGRAM_BROWSER_LOGIN` | Desktop-only browser-session connection; enabled by `start_local.py` | `false` |
 | `ALLOWED_IG_USERS` | Comma-separated permitted Instagram usernames; empty enables multiple-user access | Empty |
 | `APP_DOMAIN` | Compose/Caddy public hostname only | Required for Compose |
 
@@ -96,6 +158,8 @@ Automated checks exercise separate-user isolation, story ownership, cookie rotat
 
 - `app.py`: HTTP API, sessions, login, jobs, access controls, and static serving.
 - `instagram.py`: bounded read-only Instagram adapter and comparison.
+- `browser_login.py`, `start_local.py`: opt-in local Instagram browser login and loopback launcher.
+- `requirements-browser.txt`: optional desktop browser dependencies.
 - `web/`: responsive login and comparison interface.
 - `tests/`: simulated-provider security and behavior checks.
 - `requirements.lock.txt`: pinned runtime dependencies used for packaging.

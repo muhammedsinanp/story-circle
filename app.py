@@ -19,12 +19,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, SecretStr
 
 from instagram import InstagramAdapter, ProviderError, public_error
+from browser_login import browser_session
 
 
 @dataclass
 class Config:
     origin: str = "http://127.0.0.1:8000"
     enabled: bool = False
+    browser_login: bool = False
     allowed_users: set = field(default_factory=set)
     max_sessions: int = 100
     max_accounts: int = 5000
@@ -40,6 +42,7 @@ class Config:
         if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}):
             raise RuntimeError("Public deployment requires an HTTPS APP_ORIGIN")
         return cls(origin=origin, enabled=os.getenv("INSTAGRAM_ENABLED", "false").lower() == "true",
+                   browser_login=os.getenv("INSTAGRAM_BROWSER_LOGIN", "false").lower() == "true",
                    allowed_users={u.strip().lower().lstrip("@") for u in os.getenv("ALLOWED_IG_USERS", "").split(",") if u.strip()})
 
 
@@ -68,10 +71,17 @@ class StoryBody(BaseModel):
     story_id: str = Field(min_length=1, max_length=40, pattern=r"^[0-9]+$")
 
 
-def create_app(config=None, adapter_factory=InstagramAdapter):
+class BrowserLoginBody(BaseModel):
+    consent: bool
+
+
+def create_app(config=None, adapter_factory=InstagramAdapter, browser_connector=browser_session):
     config = config or Config.environment()
+    if config.browser_login and urlsplit(config.origin).hostname not in {"localhost", "127.0.0.1"}:
+        raise RuntimeError("Browser login is only available on a local computer. Use start_local.py.")
     sessions, buckets, active_accounts, account_runs = {}, {}, set(), {}
     guard = threading.RLock()
+    browser_guard = threading.Lock()
     pool = ThreadPoolExecutor(max_workers=config.max_jobs, thread_name_prefix="story-reader")
     web = Path(__file__).parent / "web"
     secure = config.origin.startswith("https://")
@@ -192,12 +202,73 @@ def create_app(config=None, adapter_factory=InstagramAdapter):
                 sessions[key] = s
                 set_cookie(response, key, 300)
             return {"csrf": s.csrf, "user": s.user, "enabled": config.enabled,
+                    "browser_login": config.browser_login,
                     "mode": "personal" if config.allowed_users else "multi-user",
                     "session_minutes": config.session_seconds // 60}
+
+    def complete_login(key, s, user, response):
+        with guard:
+            if s.cancelled.is_set() or sessions.get(key) is not s or s.expires <= time.monotonic():
+                raise HTTPException(401, "Session ended. Refresh to reconnect.")
+            s.user, s.csrf = user, secrets.token_urlsafe(32)
+            s.expires = time.monotonic() + config.session_seconds
+            sessions.pop(key)
+            rotated = secrets.token_urlsafe(32)
+            sessions[rotated] = s
+            set_cookie(response, rotated, config.session_seconds)
+        return {"user": s.user, "csrf": s.csrf}
+
+    @app.post("/api/login/browser")
+    def login_browser(body: BrowserLoginBody, request: Request, response: Response):
+        key, s = session_for(request, auth=False, write=True)
+        if not config.enabled or not config.browser_login:
+            raise HTTPException(503, "Browser login is not enabled. Run Story Circle on your computer with start_local.py.")
+        if not request.client or request.client.host not in {"127.0.0.1", "::1"}:
+            raise HTTPException(403, "Browser login requires a connection from this computer.")
+        if not body.consent:
+            raise HTTPException(400, "Confirm that you want to connect your own account on this computer.")
+        limit_login(request, "local-browser")
+        with guard:
+            if s.busy or s.user:
+                raise HTTPException(409, "Disconnect the current session before starting another login.")
+            if not browser_guard.acquire(blocking=False):
+                raise HTTPException(409, "An Instagram login window is already open. Finish or close it first.")
+            s.busy = True
+            # Allow five minutes in Instagram plus a bounded provider validation period.
+            s.expires = time.monotonic() + 420
+            set_cookie(response, key, 420)
+        try:
+            session_id = browser_connector(s.cancelled)
+            if s.cancelled.is_set():
+                raise HTTPException(401, "Connection cancelled.")
+            s.adapter = adapter_factory()
+            try:
+                user = s.adapter.login_session(session_id)
+            finally:
+                session_id = None
+            if config.allowed_users and user["username"].lower() not in config.allowed_users:
+                raise HTTPException(403, "This private installation does not allow this account.")
+            return complete_login(key, s, user, response)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            error = public_error(exc)
+            raise HTTPException(401, {"code": error.code, "message": error.message}) from None
+        finally:
+            with guard:
+                s.busy = False
+                if not s.user and s.adapter:
+                    s.adapter.close()
+                    s.adapter = None
+                if s.cancelled.is_set():
+                    dispose(s)
+            browser_guard.release()
 
     @app.post("/api/login")
     def login(body: LoginBody, request: Request, response: Response):
         key, s = session_for(request, auth=False, write=True)
+        if config.browser_login:
+            raise HTTPException(409, "Use the Instagram browser window to sign in on this installation.")
         if not config.enabled:
             raise HTTPException(503, "Instagram connection is not enabled on this server.")
         if not body.consent:
@@ -217,16 +288,7 @@ def create_app(config=None, adapter_factory=InstagramAdapter):
             if s.adapter is None:
                 s.adapter = adapter_factory()
             user = s.adapter.login(username, body.password.get_secret_value(), body.code.replace(" ", ""))
-            with guard:
-                if s.cancelled.is_set() or sessions.get(key) is not s:
-                    raise HTTPException(401, "Session ended. Refresh to reconnect.")
-                s.user, s.csrf = user, secrets.token_urlsafe(32)
-                s.expires = time.monotonic() + config.session_seconds
-                sessions.pop(key)
-                rotated = secrets.token_urlsafe(32)
-                sessions[rotated] = s
-                set_cookie(response, rotated, config.session_seconds)
-            return {"user": s.user, "csrf": s.csrf}
+            return complete_login(key, s, user, response)
         except HTTPException:
             raise
         except Exception as exc:
