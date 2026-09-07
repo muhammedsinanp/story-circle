@@ -5,6 +5,13 @@
   <section id="connect" class="connect-layout">
     <div class="intro"><p class="eyebrow">YOUR STORY, YOUR CIRCLE</p><h1>See who’s<br>showing up.</h1><p class="lead">Connect your Instagram account. Pick a story. See how its viewers overlap with your followers and the people you follow.</p><div class="benefits"><p><span>01</span> Followers who viewed</p><p><span>02</span> People you follow who viewed</p><p><span>03</span> Accounts absent from the viewer list</p></div><p class="intro-note">Each person connects their own account.<br>Your results stay separate from everyone else’s.</p></div>
     <section class="panel login-card"><div class="card-heading"><h2>Connect your account</h2><span class="step">01 / 02</span></div><p id="server-state" class="connection-note" role="status">Checking connection availability…</p>
+      <section id="browser-connect" hidden>
+        <p>Sign in on Instagram’s real website in a separate window, then return here. Story Circle will use that session on this computer to find your stories and compare their viewers.</p>
+        <div class="notice"><strong>Your password is entered only on Instagram.</strong><p>Story Circle uses your signed-in session locally through an unofficial integration. Instagram may decline collection access even after you sign in. This is not Meta authorization.</p></div>
+        <label class="consent"><input id="browser-consent" type="checkbox"><span>This is my account. I allow Story Circle on this computer to use this session to read my stories, followers, following, and available story viewers.</span></label>
+        <button class="primary" id="browser-login" type="button" disabled>Open Instagram to connect <span aria-hidden="true">↗</span></button>
+        <button class="text-button" id="browser-cancel" type="button" hidden>Cancel connection</button>
+      </section>
       <form id="login-form"><fieldset id="login-fields" disabled>
         <label for="username">Instagram username</label><input id="username" name="username" autocomplete="username" maxlength="30" placeholder="your_username" required spellcheck="false" autocapitalize="none">
         <label for="password">Instagram password</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="512" required>
@@ -12,7 +19,7 @@
         <div class="notice"><strong>This is an independent, unofficial connection.</strong><p>Your login details are sent to the server running Story Circle to sign in to Instagram. This is not Meta’s official login authorization. Instagram may require verification, restrict access, or stop this integration from working.</p></div>
         <label class="consent"><input id="consent" type="checkbox" required><span>This is my account, and I understand how this connection works.</span></label>
         <button class="primary" type="submit" id="login-button">Connect & find my stories <span aria-hidden="true">→</span></button>
-      </fieldset></form><p id="login-message" class="message" role="status" aria-live="polite"></p><p class="retention">Passwords aren’t saved to disk. Sessions and results are held temporarily in server memory and removed on disconnect or expiry.</p>
+      </fieldset></form><p id="login-message" class="message" role="status" aria-live="polite"></p><p id="retention-note" class="retention">Passwords aren’t saved to disk. Sessions and results are held temporarily in server memory and removed on disconnect or expiry.</p>
     </section>
   </section>
   <section id="dashboard" hidden>

@@ -1,10 +1,10 @@
 const $=id=>document.getElementById(id);
-let csrf='',user=null,result=null,filter='all',poll=null,enabled=false;
+let csrf='',user=null,result=null,filter='all',poll=null,enabled=false,browserMode=false,browserPending=false,browserCancelled=false;
 async function api(path,body){
  const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',credentials:'same-origin',cache:'no-store',headers:body===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:body===undefined?undefined:JSON.stringify(body)});
  let data;try{data=await response.json();}catch{throw new Error('The server returned an unreadable response. Try again later.');}
  if(!response.ok){const detail=data.detail;const error=new Error(typeof detail==='string'?detail:detail?.message||'The request could not be completed.');error.code=detail?.code;error.status=response.status;
-  if(response.status===401&&path!=='login'&&path!=='session'){clearTimeout(poll);user=null;result=null;renderRows();$('dashboard').hidden=true;$('connect').hidden=false;$('disconnect').hidden=true;$('login-fields').disabled=true;$('login-message').textContent='Your session ended. Refresh this page to sign in again.';}
+  if(response.status===401&&!path.startsWith('login')&&path!=='session'){clearTimeout(poll);user=null;result=null;renderRows();$('dashboard').hidden=true;$('connect').hidden=false;$('disconnect').hidden=true;$('login-fields').disabled=true;$('browser-login').disabled=true;$('login-message').textContent='Your session ended. Refresh this page to sign in again.';}
   throw error;
  }return data;
 }
@@ -30,6 +30,22 @@ $('login-form').addEventListener('submit',async event=>{
  try{const data=await api('login',{username:$('username').value.trim(),password:$('password').value,code:$('code').value.trim(),consent:$('consent').checked});csrf=data.csrf;user=data.user;$('login-form').reset();$('login-message').textContent='';await loadStories(true);}
  catch(e){$('login-message').textContent=e.message;if(e.code==='two_factor'){$('two-factor').open=true;$('code').focus();}else{$('password').value='';$('code').value='';}}
  finally{$('login-fields').disabled=!enabled;}
+});
+function browserButtonState(){$('browser-login').disabled=!enabled||!browserMode||browserPending||!$('browser-consent').checked;}
+$('browser-consent').addEventListener('change',browserButtonState);
+$('browser-login').addEventListener('click',async()=>{
+ browserPending=true;browserCancelled=false;browserButtonState();$('browser-consent').disabled=true;$('browser-cancel').hidden=false;
+ $('login-message').textContent='Sign in in the Instagram window and complete any prompts there. When you reach the home page, the window will close and Story Circle will try to read your account. This can take a few minutes.';
+ try{const data=await api('login/browser',{consent:$('browser-consent').checked});csrf=data.csrf;user=data.user;
+  if(browserCancelled){await api('disconnect',{});location.reload();return;}
+  $('login-message').textContent='';await loadStories(true);
+ }catch(e){if(!browserCancelled)$('login-message').textContent=e.message;}
+ finally{browserPending=false;$('browser-consent').disabled=false;$('browser-cancel').hidden=true;browserButtonState();}
+});
+$('browser-cancel').addEventListener('click',async()=>{
+ browserCancelled=true;$('browser-cancel').disabled=true;
+ try{await api('disconnect',{});location.reload();}
+ catch(e){$('login-message').textContent=e.message+' Close the Instagram window to stop connecting.';$('browser-cancel').disabled=false;}
 });
 async function start(){
  clearTimeout(poll);result=null;renderRows();resetStats();$('dashboard-message').textContent='';$('compare').disabled=true;$('story').disabled=true;progress('Starting your comparison','Large connection lists can take several minutes. You can disconnect to stop.');
@@ -58,5 +74,10 @@ document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click'
 $('search').addEventListener('input',renderRows);$('relationship').addEventListener('change',renderRows);
 $('download').addEventListener('click',()=>{const escape=value=>'"'+String(value).replace(/^[=+@\-\t\r]/,"'$&").replaceAll('"','""')+'"';const content=[['username','follows_you','you_follow','story_status'],...visibleRows().map(r=>[r.username,r.follower,r.following,r.viewed?'Viewed':'Not in returned viewer list'])].map(row=>row.map(escape).join(',')).join('\r\n');const url=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='story-circle-'+result.story.id+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 $('disconnect').addEventListener('click',async()=>{clearTimeout(poll);$('disconnect').disabled=true;try{await api('disconnect',{});user=null;result=null;csrf='';location.reload();}catch(e){$('dashboard-message').textContent=e.message;$('disconnect').disabled=false;}});
-async function init(){try{const data=await api('session');csrf=data.csrf;user=data.user;enabled=data.enabled;$('login-fields').disabled=!enabled;$('server-state').textContent=enabled?`Connect for a ${data.session_minutes}-minute session. ${data.mode==='personal'?'This installation is limited to the owner’s allowed accounts.':'Each account gets its own private session.'}`:'Instagram login is not enabled on this server. The operator must finish setup before you can connect.';if(user)await loadStories(false);}catch(e){$('server-state').textContent='Could not reach the connection service. Instagram login is unavailable.';$('login-message').textContent=e.message;}}
+async function init(){try{const data=await api('session');csrf=data.csrf;user=data.user;enabled=data.enabled;browserMode=Boolean(data.browser_login);
+ $('login-form').hidden=browserMode;$('browser-connect').hidden=!browserMode;$('login-fields').disabled=!enabled||browserMode;browserButtonState();
+ $('server-state').textContent=enabled?(browserMode?`Local browser connection · ${data.session_minutes}-minute session. Sign in with your own account on this computer.`:`Connect for a ${data.session_minutes}-minute session. ${data.mode==='personal'?'This installation is limited to the owner’s allowed accounts.':'Each account gets its own private session.'}`):'Instagram login is not enabled on this server. The operator must finish setup before you can connect.';
+ if(browserMode)$('retention-note').textContent='A separate temporary browser window opens on this computer. Story Circle keeps the session and results in local process memory until disconnect or expiry. Disconnecting clears Story Circle’s copy; it does not revoke the session in Instagram.';
+ if(user)await loadStories(false);
+ }catch(e){$('server-state').textContent='Could not reach the connection service. Instagram login is unavailable.';$('login-message').textContent=e.message;}}
 init();

@@ -6,29 +6,7 @@ from datetime import datetime, timezone
 from instagrapi import Client
 
 
-class ProviderError(Exception):
-    def __init__(self, code, message):
-        self.code, self.message = code, message
-        super().__init__(message)
-
-
-def public_error(exc):
-    if isinstance(exc, ProviderError):
-        return exc
-    name = type(exc).__name__
-    if name == "TwoFactorRequired":
-        return ProviderError("two_factor", "Enter your authenticator code, then submit again.")
-    if name in {"BadPassword", "BadCredentials", "InvalidUser", "UserNotFound"}:
-        return ProviderError("credentials", "Instagram did not accept this login. Check your details in Instagram.")
-    if "Challenge" in name or "Consent" in name or name in {"FeedbackRequired", "CheckpointRequired"}:
-        return ProviderError("verification", "Instagram requires an account check. Complete it in the Instagram app. This connection has stopped.")
-    if "Throttl" in name or name in {"PleaseWaitFewMinutes", "RateLimitError", "ClientForbiddenError"}:
-        return ProviderError("restricted", "Instagram restricted this request. Collection has stopped; try again later in Instagram.")
-    if name in {"LoginRequired", "ClientLoginRequired"}:
-        return ProviderError("expired", "Instagram ended this session. Disconnect and sign in again.")
-    if "NotFound" in name:
-        return ProviderError("unavailable", "Instagram no longer makes this story or its viewer list available.")
-    return ProviderError("provider", "Instagram could not complete this request. No complete comparison was produced.")
+from provider_errors import ProviderError, public_error
 
 
 class ReadClient(Client):
@@ -93,6 +71,24 @@ class InstagramAdapter:
         finally:
             self.last_request = time.monotonic()
 
+    def login_session(self, session_id):
+        """Use only a session from the explicitly opened local Instagram window."""
+        try:
+            if not self.client.login_by_sessionid(session_id) or not self.client.user_id:
+                raise ProviderError("browser_session", "Instagram did not accept the browser session for collection.")
+            # Verify identity with the provider before applying the account allowlist.
+            info = self._call(self.client.user_info_v1, str(self.client.user_id))
+            return {"id": str(info.pk), "username": info.username}
+        except Exception as exc:
+            error = public_error(exc)
+            if error.code in {"provider", "expired", "credentials"}:
+                error = ProviderError("browser_session", "Instagram did not accept this browser session for data collection. Browser sign-in alone does not guarantee collection access.")
+            raise error from None
+        finally:
+            self.client.password = ""
+            self.client.last_response = None
+            self.client.last_json = {}
+
     def stories(self):
         uid = str(self.client.user_id)
         stories = self._call(self.client.user_stories_v1, uid)
@@ -151,6 +147,8 @@ class InstagramAdapter:
     def close(self):
         self.client.password = ""
         self.client.authorization_data = {}
+        self.client.settings = {}
+        self.client.collection_check = None
         self.client.last_json = {}
         self.client.last_response = None
         for connection in (self.client.private, self.client.public):
